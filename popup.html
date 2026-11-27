@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Snap</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <img src="icons/icon.png" alt="Snap" class="logo" />
+        <div>
+          <h1>Snap</h1>
+          <p id="statsText" class="stats">Loading...</p>
+        </div>
+      </div>
+      <button id="btnCleanUp" class="btn btn-primary btn-sm"
+        title="Close New Tabs & dupes, group, sort, collapse inactive (Alt+Shift+C)">
+        Clean Up
+      </button>
+    </header>
+
+    <!-- Primary Organize Actions -->
+    <section class="section">
+      <div class="section-title">
+        <span>Organize Window</span>
+        <span class="shortcut-hint">Clean Up: Alt+Shift+C</span>
+      </div>
+      <div class="grid-2">
+        <button id="btnGroupDomain" class="btn" title="Group by Category & Domain, then sort">
+          Group &amp; Sort
+        </button>
+        <button id="btnFindDuplicates" class="btn" title="Preview duplicate tabs before closing">
+          Close Duplicates
+        </button>
+        <button id="btnSortDomain" class="btn">Sort by Domain</button>
+        <button id="btnSortTitle" class="btn">Sort by Title</button>
+        <button id="btnExpandAll" class="btn">Expand Groups</button>
+        <button id="btnCollapseAll" class="btn">Collapse Groups</button>
+      </div>
+      <button id="btnUngroupSort" class="btn btn-full">
+        Ungroup All &amp; Sort by Title
+      </button>
+
+      <!-- Sort Option Toggle -->
+      <label class="toggle-row compact" for="toggleActiveAtEnd">
+        <div class="toggle-text">
+          <span>Active group/tab at end on sort</span>
+          <small>Places active group after groups &amp; active tab last</small>
+        </div>
+        <div class="switch">
+          <input type="checkbox" id="toggleActiveAtEnd" />
+          <span class="slider"></span>
+        </div>
+      </label>
+
+      <!-- Auto-Group Toggle -->
+      <label class="toggle-row compact" for="toggleAutoGroup">
+        <div class="toggle-text">
+          <span>Auto-group new tabs</span>
+          <small>Matches categories/domains &amp; renamed groups</small>
+        </div>
+        <div class="switch">
+          <input type="checkbox" id="toggleAutoGroup" />
+          <span class="slider"></span>
+        </div>
+      </label>
+    </section>
+
+    <!-- Duplicate Preview Panel -->
+    <section id="duplicatePanel" class="panel hidden">
+      <div class="panel-header">
+        <span id="dupPanelTitle">Duplicate Tabs Found</span>
+        <button id="btnCloseDupPanel" class="btn-icon" title="Cancel">&times;</button>
+      </div>
+      <p class="panel-note">Keeping pinned/active copy. Uncheck any tab you want to keep:</p>
+      <ul id="duplicateList" class="dup-list"></ul>
+      <div class="panel-actions">
+        <button id="btnCancelDuplicates" class="btn btn-sm">Cancel</button>
+        <button id="btnConfirmDuplicates" class="btn btn-sm btn-danger">Close Selected</button>
+      </div>
+    </section>
+
+    <!-- Category Rules Drawer -->
+    <section class="section">
+      <button id="btnToggleRules" class="btn-accordion" aria-expanded="false">
+        <span>Category Rules</span>
+        <span id="rulesArrow">▸</span>
+      </button>
+
+      <div id="rulesPanel" class="panel hidden">
+        <div class="rules-select-row">
+          <select id="categorySelect" aria-label="Select category"></select>
+          <label class="inline-check" title="Enable or disable this category">
+            <input type="checkbox" id="categoryEnabled" />
+            <span>On</span>
+          </label>
+          <button id="btnDeleteCategory" class="btn btn-sm" title="Delete selected category">Del</button>
+        </div>
+
+        <div id="patternChips" class="chips-wrap"></div>
+
+        <div class="session-input-row">
+          <input type="text" id="newPatternInput" placeholder="Add domain or keyword (e.g. framer, figma.com)" />
+          <button id="btnAddPattern" class="btn btn-sm btn-primary">Add</button>
+        </div>
+
+        <div class="rules-footer">
+          <input type="text" id="newCategoryInput" placeholder="New category name..." maxlength="24" />
+          <button id="btnCreateCategory" class="btn btn-sm">+ Category</button>
+          <button id="btnResetRules" class="btn btn-sm" title="Restore default categories">Reset</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Windows -->
+    <section class="section">
+      <div class="section-title">
+        <span>Windows</span>
+        <span class="shortcut-hint">Alt+Shift+M</span>
+      </div>
+      <button id="btnMergeWindows" class="btn btn-full">
+        Merge All Windows Into This One
+      </button>
+    </section>
+
+    <!-- Saved Sessions -->
+    <section class="section">
+      <div class="section-title">Saved Sessions (Local)</div>
+      <div class="session-input-row">
+        <input type="text" id="sessionNameInput" placeholder="Session name (optional)..." maxlength="50" />
+        <button id="btnSaveSession" class="btn btn-primary btn-sm">Save</button>
+      </div>
+      <ul id="sessionList" class="session-list"></ul>
+    </section>
+
+    <!-- Status Bar -->
+    <footer id="statusBar" class="status-bar" aria-live="polite">
+      Ready
+    </footer>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+
+</html>
