@@ -112,6 +112,34 @@ export async function getAutoUngroupSingle() {
   return Boolean(data[STORAGE_KEYS.AUTO_UNGROUP_SINGLE]);
 }
 
+export async function getGroupRuleMap() {
+  const data = await chrome.storage.local.get(STORAGE_KEYS.GROUP_RULE_MAP);
+  return data[STORAGE_KEYS.GROUP_RULE_MAP] || {};
+}
+
+export async function setGroupRuleMapping(groupId, ruleKey) {
+  const map = await getGroupRuleMap();
+  map[String(groupId)] = ruleKey;
+  await chrome.storage.local.set({ [STORAGE_KEYS.GROUP_RULE_MAP]: map });
+}
+
+export async function setGroupRuleMappings(entries) {
+  if (entries.length === 0) return;
+  const map = await getGroupRuleMap();
+  for (const [groupId, ruleKey] of entries) {
+    map[String(groupId)] = ruleKey;
+  }
+  await chrome.storage.local.set({ [STORAGE_KEYS.GROUP_RULE_MAP]: map });
+}
+
+export async function removeGroupRuleMapping(groupId) {
+  const map = await getGroupRuleMap();
+  if (String(groupId) in map) {
+    delete map[String(groupId)];
+    await chrome.storage.local.set({ [STORAGE_KEYS.GROUP_RULE_MAP]: map });
+  }
+}
+
 export async function ungroupSingleTabGroups(windowId, skipGroupIds = null) {
   const [tabs, groups] = await Promise.all([
     chrome.tabs.query({ windowId }),
@@ -141,25 +169,6 @@ export async function ungroupSingleTabGroups(windowId, skipGroupIds = null) {
     await chrome.tabs.ungroup(singleTabIds);
   }
   return singleTabIds.length;
-}
-
-export async function getGroupRuleMap() {
-  const data = await chrome.storage.local.get(STORAGE_KEYS.GROUP_RULE_MAP);
-  return data[STORAGE_KEYS.GROUP_RULE_MAP] || {};
-}
-
-export async function setGroupRuleMapping(groupId, ruleKey) {
-  const map = await getGroupRuleMap();
-  map[String(groupId)] = ruleKey;
-  await chrome.storage.local.set({ [STORAGE_KEYS.GROUP_RULE_MAP]: map });
-}
-
-export async function removeGroupRuleMapping(groupId) {
-  const map = await getGroupRuleMap();
-  if (String(groupId) in map) {
-    delete map[String(groupId)];
-    await chrome.storage.local.set({ [STORAGE_KEYS.GROUP_RULE_MAP]: map });
-  }
 }
 
 /* -------------------------------------------
@@ -201,16 +210,21 @@ export function getSortableDomain(rawUrl) {
   }
 }
 
-/**
- * Collapse subdomains (e.g. docs.example.com -> example.com) for base-domain grouping.
- * Keeps common multi-part ccTLDs like .com.my / .co.uk intact.
- */
 export function getBaseDomain(hostname) {
   if (!hostname) return null;
   const parts = hostname.split(".").filter(Boolean);
   if (parts.length <= 2) return hostname;
   const lastTwo = parts.slice(-2).join(".");
-  const multiPartSuffixes = new Set(["com.my", "net.my", "org.my", "edu.my", "gov.my", "co.uk", "com.au", "co.jp"]);
+  const multiPartSuffixes = new Set([
+    "com.my",
+    "net.my",
+    "org.my",
+    "edu.my",
+    "gov.my",
+    "co.uk",
+    "com.au",
+    "co.jp"
+  ]);
   if (multiPartSuffixes.has(lastTwo) && parts.length >= 3) {
     return parts.slice(-3).join(".");
   }
@@ -219,8 +233,8 @@ export function getBaseDomain(hostname) {
 
 export function colorForLabel(label) {
   let hash = 0;
-  for (let i = 0; i < label.length; i++) {
-    hash = (hash * 31 + label.charCodeAt(i)) >>> 0;
+  for (const ch of label) {
+    hash = (hash * 31 + (ch.codePointAt(0) ?? 0)) >>> 0;
   }
   return GROUP_COLORS[hash % GROUP_COLORS.length];
 }
@@ -229,7 +243,6 @@ function matchesPattern(pattern, hostname, fullUrlLower, titleLower) {
   const kw = pattern.trim().toLowerCase();
   if (kw.length < 2) return false;
 
-  // Domain-like pattern (contains a dot, e.g. "x.com", "figma.com", "amazon.")
   if (kw.includes(".") && !kw.includes("/")) {
     if (kw.endsWith(".")) {
       return hostname.startsWith(kw) || hostname.includes("." + kw);
@@ -237,7 +250,6 @@ function matchesPattern(pattern, hostname, fullUrlLower, titleLower) {
     return hostname === kw || hostname.endsWith("." + kw);
   }
 
-  // Path or general keyword (e.g. "framer", "maybank", "glyph-trail")
   return (
     hostname.includes(kw) ||
     fullUrlLower.includes(kw) ||
@@ -245,10 +257,6 @@ function matchesPattern(pattern, hostname, fullUrlLower, titleLower) {
   );
 }
 
-/**
- * Resolves a tab to either a Category rule or a Base-Domain rule.
- * Returns { key, label, color } or null.
- */
 export function matchTabToRule(tab, categories) {
   const rawUrl = tab.url || tab.pendingUrl || "";
   if (!rawUrl || isBlankNewTab(tab)) return null;
@@ -265,21 +273,20 @@ export function matchTabToRule(tab, categories) {
   const fullUrlLower = rawUrl.toLowerCase();
   const titleLower = (tab.title || "").toLowerCase();
 
-  // 1. Check enabled Categories (user rules + built-in categories)
   for (const cat of categories) {
     if (!cat.enabled || !Array.isArray(cat.patterns)) continue;
-    for (const pattern of cat.patterns) {
-      if (matchesPattern(pattern, hostname, fullUrlLower, titleLower)) {
-        return {
-          key: `cat:${cat.id}`,
-          label: cat.name,
-          color: cat.color || colorForLabel(cat.name)
-        };
-      }
+    const matched = cat.patterns.some((pattern) =>
+      matchesPattern(pattern, hostname, fullUrlLower, titleLower)
+    );
+    if (matched) {
+      return {
+        key: `cat:${cat.id}`,
+        label: cat.name,
+        color: cat.color || colorForLabel(cat.name)
+      };
     }
   }
 
-  // 2. Fallback to Base Domain
   const baseDomain = getBaseDomain(hostname);
   if (!baseDomain) return null;
 
@@ -293,18 +300,21 @@ export function matchTabToRule(tab, categories) {
 /* -------------------------------------------
    Find Existing Group for a Rule
 -------------------------------------------- */
-export async function findMatchingGroupInWindow(windowId, rule, existingGroups = null) {
+export async function findMatchingGroupInWindow(
+  windowId,
+  rule,
+  existingGroups = null,
+  preloadedRuleMap = null
+) {
   const groups = existingGroups || (await chrome.tabGroups.query({ windowId }));
-  const ruleMap = await getGroupRuleMap();
+  const ruleMap = preloadedRuleMap || (await getGroupRuleMap());
 
-  // 1. Match via remembered groupId -> ruleKey (works even after you rename a group!)
   for (const g of groups) {
     if (ruleMap[String(g.id)] === rule.key) {
       return g;
     }
   }
 
-  // 2. Match via group title (case-insensitive)
   const targetTitle = rule.label.toLowerCase();
   return groups.find((g) => (g.title || "").trim().toLowerCase() === targetTitle) || null;
 }
@@ -321,6 +331,73 @@ export function getTabSortKey(tab, mode) {
   return (tab.title || tab.url || "").toLowerCase();
 }
 
+function buildTabPartitions(unpinnedTabs, groups, mode) {
+  const groupMap = new Map(groups.map((g) => [g.id, g]));
+  const groupedBuckets = new Map();
+  const groupUnits = [];
+  const ungroupedTabs = [];
+
+  for (const tab of unpinnedTabs) {
+    const hasGroup =
+      tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE && groupMap.has(tab.groupId);
+    if (hasGroup) {
+      if (!groupedBuckets.has(tab.groupId)) {
+        const list = [];
+        groupedBuckets.set(tab.groupId, list);
+        groupUnits.push({ group: groupMap.get(tab.groupId), tabs: list });
+      }
+      groupedBuckets.get(tab.groupId).push(tab);
+    } else {
+      ungroupedTabs.push(tab);
+    }
+  }
+
+  for (const unit of groupUnits) {
+    unit.tabs.sort((a, b) => getTabSortKey(a, mode).localeCompare(getTabSortKey(b, mode)));
+    const titleKey = (unit.group.title || "").trim().toLowerCase();
+    unit.sortKey = titleKey || getTabSortKey(unit.tabs[0], mode);
+  }
+
+  return { groupUnits, ungroupedTabs };
+}
+
+function orderGroups(groupUnits, activeGroupId, useActiveAtEnd) {
+  const byKey = (a, b) => a.sortKey.localeCompare(b.sortKey);
+  if (!useActiveAtEnd || activeGroupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
+    return [...groupUnits].sort(byKey);
+  }
+  const regular = groupUnits.filter((u) => u.group.id !== activeGroupId).sort(byKey);
+  const activeUnit = groupUnits.find((u) => u.group.id === activeGroupId);
+  return activeUnit ? [...regular, activeUnit] : regular;
+}
+
+function orderUngrouped(ungroupedTabs, activeTab, useActiveAtEnd, mode) {
+  const byKey = (a, b) => getTabSortKey(a, mode).localeCompare(getTabSortKey(b, mode));
+  const activeIsUngrouped =
+    useActiveAtEnd &&
+    activeTab &&
+    !activeTab.pinned &&
+    activeTab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE;
+
+  if (!activeIsUngrouped) {
+    return [...ungroupedTabs].sort(byKey);
+  }
+
+  const others = ungroupedTabs.filter((t) => t.id !== activeTab.id).sort(byKey);
+  others.push(activeTab);
+  return others;
+}
+
+async function placeGroupAtEnd(windowId, unit) {
+  await chrome.tabGroups.move(unit.group.id, { index: -1 });
+  const latestTabs = await chrome.tabs.query({ windowId });
+  const startIndex = latestTabs.length - unit.tabs.length;
+  await chrome.tabs.move(
+    unit.tabs.map((t) => t.id),
+    { index: startIndex }
+  );
+}
+
 export async function sortWindowTabs(windowId, mode = "domain", activeAtEnd = null) {
   const useActiveAtEnd = activeAtEnd === null ? await getActiveAtEnd() : activeAtEnd;
 
@@ -335,7 +412,6 @@ export async function sortWindowTabs(windowId, mode = "domain", activeAtEnd = nu
   const activeGroupId =
     activeTab && !activeTab.pinned ? activeTab.groupId : chrome.tabGroups.TAB_GROUP_ID_NONE;
 
-  // 1. Sort pinned tabs inside the pinned region
   const pinnedTabs = tabs.filter((t) => t.pinned);
   if (pinnedTabs.length > 1) {
     pinnedTabs.sort((a, b) => getTabSortKey(a, mode).localeCompare(getTabSortKey(b, mode)));
@@ -345,74 +421,15 @@ export async function sortWindowTabs(windowId, mode = "domain", activeAtEnd = nu
     );
   }
 
-  // 2. Partition unpinned tabs into groups vs ungrouped tabs
   const unpinnedTabs = tabs.filter((t) => !t.pinned);
-  const groupMap = new Map(groups.map((g) => [g.id, g]));
-  const groupedBuckets = new Map();
-  const groupUnits = [];
-  const ungroupedTabs = [];
+  const { groupUnits, ungroupedTabs } = buildTabPartitions(unpinnedTabs, groups, mode);
+  const orderedGroups = orderGroups(groupUnits, activeGroupId, useActiveAtEnd);
+  const orderedUngrouped = orderUngrouped(ungroupedTabs, activeTab, useActiveAtEnd, mode);
 
-  for (const tab of unpinnedTabs) {
-    if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE && groupMap.has(tab.groupId)) {
-      if (!groupedBuckets.has(tab.groupId)) {
-        const list = [];
-        groupedBuckets.set(tab.groupId, list);
-        groupUnits.push({ group: groupMap.get(tab.groupId), tabs: list });
-      }
-      groupedBuckets.get(tab.groupId).push(tab);
-    } else {
-      ungroupedTabs.push(tab);
-    }
-  }
-
-  // Sort tabs inside each group and assign group sort key
-  for (const unit of groupUnits) {
-    unit.tabs.sort((a, b) => getTabSortKey(a, mode).localeCompare(getTabSortKey(b, mode)));
-    const titleKey = (unit.group.title || "").trim().toLowerCase();
-    unit.sortKey = titleKey || getTabSortKey(unit.tabs[0], mode);
-  }
-
-  // Order groups (optionally pushing active group to end of groups)
-  let orderedGroups = [];
-  if (useActiveAtEnd && activeGroupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
-    const regular = groupUnits
-      .filter((u) => u.group.id !== activeGroupId)
-      .sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-    const activeUnit = groupUnits.find((u) => u.group.id === activeGroupId);
-    orderedGroups = activeUnit ? [...regular, activeUnit] : regular;
-  } else {
-    orderedGroups = [...groupUnits].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-  }
-
-  // Order ungrouped tabs (optionally pushing active ungrouped tab to the very end)
-  let orderedUngrouped = [];
-  const activeIsUngrouped =
-    useActiveAtEnd &&
-    activeTab &&
-    !activeTab.pinned &&
-    activeTab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE;
-
-  if (activeIsUngrouped) {
-    orderedUngrouped = ungroupedTabs
-      .filter((t) => t.id !== activeTab.id)
-      .sort((a, b) => getTabSortKey(a, mode).localeCompare(getTabSortKey(b, mode)));
-    orderedUngrouped.push(activeTab);
-  } else {
-    orderedUngrouped = [...ungroupedTabs].sort((a, b) =>
-      getTabSortKey(a, mode).localeCompare(getTabSortKey(b, mode))
-    );
-  }
-
-  // 3. Place sorted groups first, then sorted ungrouped tabs
-  for (const unit of orderedGroups) {
-    await chrome.tabGroups.move(unit.group.id, { index: -1 });
-    const latestTabs = await chrome.tabs.query({ windowId });
-    const startIndex = latestTabs.length - unit.tabs.length;
-    await chrome.tabs.move(
-      unit.tabs.map((t) => t.id),
-      { index: startIndex }
-    );
-  }
+  await orderedGroups.reduce(
+    (chain, unit) => chain.then(() => placeGroupAtEnd(windowId, unit)),
+    Promise.resolve()
+  );
 
   if (orderedUngrouped.length > 0) {
     await chrome.tabs.move(
@@ -428,10 +445,11 @@ export async function sortWindowTabs(windowId, mode = "domain", activeAtEnd = nu
    Group Tabs in Window (Category + Domain)
 -------------------------------------------- */
 export async function groupWindowTabs(windowId, { sortAfter = true } = {}) {
-  const [tabs, existingGroups, categories] = await Promise.all([
+  const [tabs, existingGroups, categories, ruleMap] = await Promise.all([
     chrome.tabs.query({ windowId, pinned: false }),
     chrome.tabGroups.query({ windowId }),
-    getCategories()
+    getCategories(),
+    getGroupRuleMap()
   ]);
 
   const buckets = new Map();
@@ -446,37 +464,48 @@ export async function groupWindowTabs(windowId, { sortAfter = true } = {}) {
 
   let groupedCount = 0;
   let newGroups = 0;
+  const newMappings = [];
 
-  for (const { rule, tabs: matchedTabs } of buckets.values()) {
-    const existingGroup = await findMatchingGroupInWindow(windowId, rule, existingGroups);
+  await Promise.all(
+    Array.from(buckets.values()).map(async ({ rule, tabs: matchedTabs }) => {
+      const existingGroup = await findMatchingGroupInWindow(
+        windowId,
+        rule,
+        existingGroups,
+        ruleMap
+      );
 
-    if (existingGroup) {
-      const toAdd = matchedTabs
-        .filter((t) => t.groupId !== existingGroup.id)
-        .map((t) => t.id);
+      if (existingGroup) {
+        const toAdd = matchedTabs
+          .filter((t) => t.groupId !== existingGroup.id)
+          .map((t) => t.id);
 
-      if (toAdd.length > 0) {
-        await chrome.tabs.group({ groupId: existingGroup.id, tabIds: toAdd });
-        await setGroupRuleMapping(existingGroup.id, rule.key);
-        groupedCount += toAdd.length;
+        if (toAdd.length > 0) {
+          await chrome.tabs.group({ groupId: existingGroup.id, tabIds: toAdd });
+          newMappings.push([existingGroup.id, rule.key]);
+          groupedCount += toAdd.length;
+        }
+        return;
       }
-    } else if (matchedTabs.length >= 2) {
-      // Only create a brand new group if 2+ tabs match
-      const tabIds = matchedTabs.map((t) => t.id);
-      const groupId = await chrome.tabs.group({
-        tabIds,
-        createProperties: { windowId }
-      });
-      await chrome.tabGroups.update(groupId, {
-        title: rule.label,
-        color: rule.color
-      });
-      await setGroupRuleMapping(groupId, rule.key);
-      existingGroups.push({ id: groupId, title: rule.label });
-      groupedCount += tabIds.length;
-      newGroups++;
-    }
-  }
+
+      if (matchedTabs.length >= 2) {
+        const tabIds = matchedTabs.map((t) => t.id);
+        const groupId = await chrome.tabs.group({
+          tabIds,
+          createProperties: { windowId }
+        });
+        await chrome.tabGroups.update(groupId, {
+          title: rule.label,
+          color: rule.color
+        });
+        newMappings.push([groupId, rule.key]);
+        groupedCount += tabIds.length;
+        newGroups++;
+      }
+    })
+  );
+
+  await setGroupRuleMappings(newMappings);
 
   if (await getAutoUngroupSingle()) {
     await ungroupSingleTabGroups(windowId);
@@ -517,10 +546,9 @@ export async function findDuplicateTabs(windowId) {
 }
 
 /* -------------------------------------------
-   One-Click Clean Up (New Tabs + Dupes + Group + Sort + Collapse Inactive)
+   One-Click Clean Up
 -------------------------------------------- */
 export async function runCleanUp(windowId) {
-  // 1. Close blank New Tabs (safety: keep 1 if every tab is a blank New Tab)
   const initialTabs = await chrome.tabs.query({ windowId });
   const blankTabs = initialTabs.filter(isBlankNewTab);
 
@@ -537,7 +565,6 @@ export async function runCleanUp(windowId) {
     }
   }
 
-  // 2. Close duplicate tabs
   const duplicates = await findDuplicateTabs(windowId);
   let closedDuplicates = 0;
   if (duplicates.length > 0) {
@@ -545,10 +572,8 @@ export async function runCleanUp(windowId) {
     closedDuplicates = duplicates.length;
   }
 
-  // 3. Group & sort
   const { groupedCount, newGroups } = await groupWindowTabs(windowId, { sortAfter: true });
 
-  // 4. Collapse all groups EXCEPT the active tab's group
   const [afterTabs, groups] = await Promise.all([
     chrome.tabs.query({ windowId }),
     chrome.tabGroups.query({ windowId })
@@ -557,10 +582,11 @@ export async function runCleanUp(windowId) {
   const activeGroupId =
     activeTab && !activeTab.pinned ? activeTab.groupId : chrome.tabGroups.TAB_GROUP_ID_NONE;
 
-  for (const group of groups) {
-    const shouldCollapse = group.id !== activeGroupId;
-    await chrome.tabGroups.update(group.id, { collapsed: shouldCollapse });
-  }
+  await Promise.all(
+    groups.map((group) =>
+      chrome.tabGroups.update(group.id, { collapsed: group.id !== activeGroupId })
+    )
+  );
 
   return {
     closedNewTabs,
@@ -574,24 +600,32 @@ export async function runCleanUp(windowId) {
 /* -------------------------------------------
    Merge Windows (Manual Button & Shortcut)
 -------------------------------------------- */
+async function moveSingleGroup(groupId, targetWindowId) {
+  try {
+    await chrome.tabGroups.move(groupId, { windowId: targetWindowId, index: -1 });
+    return 1;
+  } catch {
+    return 0;
+  }
+}
+
 export async function moveWindowContents(sourceWindowId, targetWindowId) {
   if (sourceWindowId === targetWindowId) return { movedTabs: 0, movedGroups: 0 };
 
   const sourceTabs = await chrome.tabs.query({ windowId: sourceWindowId });
   if (sourceTabs.length === 0) return { movedTabs: 0, movedGroups: 0 };
 
-  const pinnedIds = new Set(sourceTabs.filter((t) => t.pinned).map((t) => t.id));
+  const pinnedIds = sourceTabs.filter((t) => t.pinned).map((t) => t.id);
   const groups = await chrome.tabGroups.query({ windowId: sourceWindowId });
 
   let movedGroups = 0;
-  for (const group of groups) {
-    try {
-      await chrome.tabGroups.move(group.id, { windowId: targetWindowId, index: -1 });
-      movedGroups++;
-    } catch {
-      // Ignore special/unmovable groups
-    }
-  }
+  await groups.reduce(
+    (chain, group) =>
+      chain.then(async () => {
+        movedGroups += await moveSingleGroup(group.id, targetWindowId);
+      }),
+    Promise.resolve()
+  );
 
   const remainingTabs = await chrome.tabs.query({ windowId: sourceWindowId });
   const ungroupedIds = remainingTabs
@@ -602,20 +636,16 @@ export async function moveWindowContents(sourceWindowId, targetWindowId) {
     await chrome.tabs.move(ungroupedIds, { windowId: targetWindowId, index: -1 });
   }
 
-  for (const tabId of pinnedIds) {
-    try {
-      await chrome.tabs.update(tabId, { pinned: true });
-    } catch {
-      // Ignore closed tab
-    }
-  }
+  await Promise.all(
+    pinnedIds.map((tabId) => chrome.tabs.update(tabId, { pinned: true }).catch(() => { }))
+  );
 
   return { movedTabs: sourceTabs.length, movedGroups };
 }
 
 export async function mergeAllWindowsInto(targetWindowId) {
   const targetWindow = await chrome.windows.get(targetWindowId);
-  if (!targetWindow || targetWindow.type !== "normal") {
+  if (targetWindow?.type !== "normal") {
     throw new Error("Target window is not a normal browser window.");
   }
 
@@ -631,11 +661,15 @@ export async function mergeAllWindowsInto(targetWindowId) {
   let totalTabsMoved = 0;
   let mergedWindows = 0;
 
-  for (const win of otherWindows) {
-    const { movedTabs } = await moveWindowContents(win.id, targetWindowId);
-    totalTabsMoved += movedTabs;
-    mergedWindows++;
-  }
+  await otherWindows.reduce(
+    (chain, win) =>
+      chain.then(async () => {
+        const { movedTabs } = await moveWindowContents(win.id, targetWindowId);
+        totalTabsMoved += movedTabs;
+        mergedWindows++;
+      }),
+    Promise.resolve()
+  );
 
   await chrome.windows.update(targetWindowId, { focused: true });
   return { mergedWindows, movedTabs: totalTabsMoved };

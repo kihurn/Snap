@@ -16,8 +16,8 @@ import {
 const statsText = document.getElementById("statsText");
 const statusBar = document.getElementById("statusBar");
 const toggleAutoGroup = document.getElementById("toggleAutoGroup");
-const toggleActiveAtEnd = document.getElementById("toggleActiveAtEnd");
 const toggleAutoUngroupSingle = document.getElementById("toggleAutoUngroupSingle");
+const toggleActiveAtEnd = document.getElementById("toggleActiveAtEnd");
 
 // Duplicate preview elements
 const duplicatePanel = document.getElementById("duplicatePanel");
@@ -49,6 +49,13 @@ function setStatus(message) {
   statusTimer = setTimeout(() => {
     statusBar.textContent = "Ready";
   }, 4000);
+}
+
+function runSafely(promise) {
+  promise.catch((err) => {
+    console.error(err);
+    setStatus("Something went wrong.");
+  });
 }
 
 async function getCurrentWindow() {
@@ -100,9 +107,7 @@ async function setAllGroupsCollapsed(collapsed) {
     setStatus("No tab groups in this window.");
     return;
   }
-  for (const g of groups) {
-    await chrome.tabGroups.update(g.id, { collapsed });
-  }
+  await Promise.all(groups.map((g) => chrome.tabGroups.update(g.id, { collapsed })));
   setStatus(`${collapsed ? "Collapsed" : "Expanded"} ${groups.length} group(s).`);
 }
 
@@ -188,36 +193,17 @@ async function confirmCloseDuplicates() {
 /* -------------------------------------------
    3. Category Rules Editor
 -------------------------------------------- */
-async function renderCategoryRules() {
-  cachedCategories = await getCategories();
+function normalizePattern(rawPattern) {
+  let value = rawPattern.trim().toLowerCase();
+  if (value.startsWith("https://")) value = value.slice(8);
+  else if (value.startsWith("http://")) value = value.slice(7);
+  if (value.startsWith("www.")) value = value.slice(4);
+  while (value.endsWith("/")) value = value.slice(0, -1);
+  return value;
+}
 
-  if (!selectedCategoryId || !cachedCategories.some((c) => c.id === selectedCategoryId)) {
-    selectedCategoryId = cachedCategories[0]?.id || null;
-  }
-
-  categorySelect.textContent = "";
-  for (const cat of cachedCategories) {
-    const opt = document.createElement("option");
-    opt.value = cat.id;
-    opt.textContent = `${cat.name} (${cat.patterns.length})${cat.enabled ? "" : " [Off]"}`;
-    categorySelect.appendChild(opt);
-  }
-
-  if (selectedCategoryId) {
-    categorySelect.value = selectedCategoryId;
-  }
-
-  const currentCat = cachedCategories.find((c) => c.id === selectedCategoryId);
+function renderPatternChips(currentCat) {
   patternChips.textContent = "";
-
-  if (!currentCat) {
-    categoryEnabled.checked = false;
-    categoryEnabled.disabled = true;
-    return;
-  }
-
-  categoryEnabled.disabled = false;
-  categoryEnabled.checked = Boolean(currentCat.enabled);
 
   if (currentCat.patterns.length === 0) {
     const empty = document.createElement("span");
@@ -251,6 +237,38 @@ async function renderCategoryRules() {
   }
 }
 
+async function renderCategoryRules() {
+  cachedCategories = await getCategories();
+
+  if (!selectedCategoryId || !cachedCategories.some((c) => c.id === selectedCategoryId)) {
+    selectedCategoryId = cachedCategories[0]?.id || null;
+  }
+
+  categorySelect.textContent = "";
+  for (const cat of cachedCategories) {
+    const opt = document.createElement("option");
+    opt.value = cat.id;
+    opt.textContent = `${cat.name} (${cat.patterns.length})${cat.enabled ? "" : " [Off]"}`;
+    categorySelect.appendChild(opt);
+  }
+
+  if (selectedCategoryId) {
+    categorySelect.value = selectedCategoryId;
+  }
+
+  const currentCat = cachedCategories.find((c) => c.id === selectedCategoryId);
+  if (!currentCat) {
+    patternChips.textContent = "";
+    categoryEnabled.checked = false;
+    categoryEnabled.disabled = true;
+    return;
+  }
+
+  categoryEnabled.disabled = false;
+  categoryEnabled.checked = Boolean(currentCat.enabled);
+  renderPatternChips(currentCat);
+}
+
 async function handleAddPatterns() {
   const currentCat = cachedCategories.find((c) => c.id === selectedCategoryId);
   if (!currentCat) return;
@@ -260,7 +278,7 @@ async function handleAddPatterns() {
 
   const entries = raw
     .split(",")
-    .map((s) => s.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, ""))
+    .map(normalizePattern)
     .filter((s) => s.length >= 2);
 
   let added = 0;
@@ -386,12 +404,12 @@ async function renderSessions() {
     const restoreBtn = document.createElement("button");
     restoreBtn.className = "btn btn-sm";
     restoreBtn.textContent = "Restore";
-    restoreBtn.addEventListener("click", () => restoreSession(session));
+    restoreBtn.addEventListener("click", () => runSafely(restoreSession(session)));
 
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "btn btn-sm";
     deleteBtn.textContent = "Del";
-    deleteBtn.addEventListener("click", () => deleteSession(session.id));
+    deleteBtn.addEventListener("click", () => runSafely(deleteSession(session.id)));
 
     actions.appendChild(restoreBtn);
     actions.appendChild(deleteBtn);
@@ -451,35 +469,38 @@ async function saveCurrentSession() {
   setStatus(`Saved "${newSession.name}" (${serializedTabs.length} tabs).`);
 }
 
-async function restoreSession(session) {
-  if (!session.tabs || session.tabs.length === 0) return;
+async function pinRestoredTabs(createdTabs) {
+  const pinnedEntries = createdTabs.filter((entry) => entry.meta.pinned);
+  await Promise.all(
+    pinnedEntries.map((entry) =>
+      chrome.tabs.update(entry.id, { pinned: true }).catch(() => { })
+    )
+  );
+}
 
-  const first = session.tabs[0];
-  const newWin = await chrome.windows.create({ url: first.url });
+async function createTabsSequentially(windowId, sessionTabs) {
   const createdTabs = [];
+  await sessionTabs.reduce(
+    (chain, item) =>
+      chain.then(async () => {
+        try {
+          const created = await chrome.tabs.create({
+            windowId,
+            url: item.url,
+            pinned: Boolean(item.pinned),
+            active: false
+          });
+          createdTabs.push({ id: created.id, meta: item });
+        } catch {
+          // Skip invalid or restricted URLs safely
+        }
+      }),
+    Promise.resolve()
+  );
+  return createdTabs;
+}
 
-  if (newWin.tabs && newWin.tabs[0]) {
-    if (first.pinned) {
-      await chrome.tabs.update(newWin.tabs[0].id, { pinned: true });
-    }
-    createdTabs.push({ id: newWin.tabs[0].id, meta: first });
-  }
-
-  for (let i = 1; i < session.tabs.length; i++) {
-    const item = session.tabs[i];
-    try {
-      const created = await chrome.tabs.create({
-        windowId: newWin.id,
-        url: item.url,
-        pinned: Boolean(item.pinned),
-        active: false
-      });
-      createdTabs.push({ id: created.id, meta: item });
-    } catch {
-      // Skip invalid/restricted URLs
-    }
-  }
-
+async function recreateSessionGroups(windowId, createdTabs) {
   const groupsToCreate = new Map();
   for (const entry of createdTabs) {
     if (entry.meta.pinned || !entry.meta.groupKey) continue;
@@ -493,22 +514,49 @@ async function restoreSession(session) {
     groupsToCreate.get(entry.meta.groupKey).tabIds.push(entry.id);
   }
 
-  for (const groupInfo of groupsToCreate.values()) {
-    if (groupInfo.tabIds.length === 0) continue;
-    try {
-      const groupId = await chrome.tabs.group({
-        tabIds: groupInfo.tabIds,
-        createProperties: { windowId: newWin.id }
-      });
-      await chrome.tabGroups.update(groupId, {
-        title: groupInfo.title,
-        color: groupInfo.color
-      });
-    } catch {
-      // Ignore grouping failures
+  await Promise.all(
+    Array.from(groupsToCreate.values()).map(async (groupInfo) => {
+      if (groupInfo.tabIds.length === 0) return;
+      try {
+        const groupId = await chrome.tabs.group({
+          tabIds: groupInfo.tabIds,
+          createProperties: { windowId }
+        });
+        await chrome.tabGroups.update(groupId, {
+          title: groupInfo.title,
+          color: groupInfo.color
+        });
+      } catch {
+        // Ignore grouping failures on restricted tabs
+      }
+    })
+  );
+}
+
+async function restoreSession(session) {
+  if (!session.tabs?.length) return;
+
+  const urls = session.tabs.map((t) => t.url);
+  let newWin;
+  try {
+    newWin = await chrome.windows.create({ url: urls });
+  } catch {
+    newWin = await chrome.windows.create({});
+  }
+
+  let createdTabs = [];
+  if (newWin.tabs?.length === session.tabs.length) {
+    createdTabs = newWin.tabs.map((tab, idx) => ({ id: tab.id, meta: session.tabs[idx] }));
+    await pinRestoredTabs(createdTabs);
+  } else {
+    const initialTabId = newWin.tabs?.[0]?.id;
+    createdTabs = await createTabsSequentially(newWin.id, session.tabs);
+    if (initialTabId && createdTabs.length > 0) {
+      await chrome.tabs.remove(initialTabId).catch(() => { });
     }
   }
 
+  await recreateSessionGroups(newWin.id, createdTabs);
   setStatus(`Restored "${session.name}".`);
 }
 
@@ -539,6 +587,25 @@ toggleAutoGroup.addEventListener("change", async () => {
   setStatus(toggleAutoGroup.checked ? "Auto-group tabs ON." : "Auto-group tabs OFF.");
 });
 
+toggleAutoUngroupSingle.addEventListener("change", async () => {
+  const enabled = toggleAutoUngroupSingle.checked;
+  await chrome.storage.local.set({ [STORAGE_KEYS.AUTO_UNGROUP_SINGLE]: enabled });
+
+  if (!enabled) {
+    setStatus("Auto-ungroup 1-tab groups OFF.");
+    return;
+  }
+
+  const win = await getCurrentWindow();
+  const ungrouped = await ungroupSingleTabGroups(win.id);
+  if (ungrouped > 0) {
+    const suffix = ungrouped === 1 ? "" : "s";
+    setStatus(`Auto-ungroup ON (ungrouped ${ungrouped} single-tab group${suffix}).`);
+  } else {
+    setStatus("Auto-ungroup 1-tab groups ON.");
+  }
+});
+
 toggleActiveAtEnd.addEventListener("change", async () => {
   await chrome.storage.local.set({ [STORAGE_KEYS.ACTIVE_AT_END]: toggleActiveAtEnd.checked });
   setStatus(
@@ -546,23 +613,6 @@ toggleActiveAtEnd.addEventListener("change", async () => {
       ? "Sort order: Active group/tab placed at end."
       : "Sort order: Pure alphabetical."
   );
-});
-
-toggleAutoUngroupSingle.addEventListener("change", async () => {
-  const enabled = toggleAutoUngroupSingle.checked;
-  await chrome.storage.local.set({ [STORAGE_KEYS.AUTO_UNGROUP_SINGLE]: enabled });
-
-  if (enabled) {
-    const win = await getCurrentWindow();
-    const ungrouped = await ungroupSingleTabGroups(win.id);
-    setStatus(
-      ungrouped > 0
-        ? `Auto-ungroup ON (ungrouped ${ungrouped} single-tab group${ungrouped === 1 ? "" : "s"}).`
-        : "Auto-ungroup 1-tab groups ON."
-    );
-  } else {
-    setStatus("Auto-ungroup 1-tab groups OFF.");
-  }
 });
 
 duplicateList.addEventListener("change", updateConfirmDupButton);
@@ -574,7 +624,6 @@ document.getElementById("btnCloseDupPanel").addEventListener("click", () => {
   duplicatePanel.classList.add("hidden");
 });
 
-// Rules accordion & controls
 btnToggleRules.addEventListener("click", () => {
   const isHidden = rulesPanel.classList.toggle("hidden");
   btnToggleRules.setAttribute("aria-expanded", String(!isHidden));
@@ -597,12 +646,12 @@ categoryEnabled.addEventListener("change", async () => {
 
 document.getElementById("btnAddPattern").addEventListener("click", handleAddPatterns);
 newPatternInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") handleAddPatterns();
+  if (e.key === "Enter") runSafely(handleAddPatterns());
 });
 
 document.getElementById("btnCreateCategory").addEventListener("click", handleCreateCategory);
 newCategoryInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") handleCreateCategory();
+  if (e.key === "Enter") runSafely(handleCreateCategory());
 });
 
 document.getElementById("btnDeleteCategory").addEventListener("click", handleDeleteCategory);
@@ -614,7 +663,7 @@ document.getElementById("btnResetRules").addEventListener("click", async () => {
 });
 
 sessionNameInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") saveCurrentSession();
+  if (e.key === "Enter") runSafely(saveCurrentSession());
 });
 
 // Initialize popup

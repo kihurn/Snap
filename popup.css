@@ -127,16 +127,11 @@ body {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.12s ease, transform 0.06s ease;
   text-align: center;
 }
 
 .btn:hover {
   background: var(--surface-hover);
-}
-
-.btn:active {
-  transform: scale(0.98);
 }
 
 .btn-primary {
@@ -410,7 +405,6 @@ body {
   inset: 0;
   background: var(--border);
   border-radius: 999px;
-  transition: background 0.15s ease;
 }
 
 .slider::before {
@@ -422,7 +416,6 @@ body {
   top: 3px;
   background: #ffffff;
   border-radius: 50%;
-  transition: transform 0.15s ease;
 }
 
 .switch input:checked+.slider {
@@ -432,6 +425,25 @@ body {
 .switch input:checked+.slider::before {
   transform: translateX(16px);
   background: var(--primary-text);
+}
+
+/* Motion strictly gated by reduced-motion preference */
+@media (prefers-reduced-motion: no-preference) {
+  .btn {
+    transition: background 0.12s ease, transform 0.06s ease;
+  }
+
+  .btn:active {
+    transform: scale(0.98);
+  }
+
+  .slider {
+    transition: background 0.15s ease;
+  }
+
+  .slider::before {
+    transition: transform 0.15s ease;
+  }
 }
 
 /* Inputs & Sessions */

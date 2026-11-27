@@ -70,19 +70,19 @@
           <span class="slider"></span>
         </div>
       </label>
-    </section>
 
-    <!-- Auto-Ungroup Single-Tab Groups Toggle -->
-    <label class="toggle-row compact" for="toggleAutoUngroupSingle">
-      <div class="toggle-text">
-        <span>Auto-ungroup 1-tab groups</span>
-        <small>Ungroups automatically if only 1 tab remains</small>
-      </div>
-      <div class="switch">
-        <input type="checkbox" id="toggleAutoUngroupSingle" />
-        <span class="slider"></span>
-      </div>
-    </label>
+      <!-- Auto-Ungroup Single-Tab Groups Toggle -->
+      <label class="toggle-row compact" for="toggleAutoUngroupSingle">
+        <div class="toggle-text">
+          <span>Auto-ungroup 1-tab groups</span>
+          <small>Ungroups automatically if only 1 tab remains</small>
+        </div>
+        <div class="switch">
+          <input type="checkbox" id="toggleAutoUngroupSingle" />
+          <span class="slider"></span>
+        </div>
+      </label>
+    </section>
 
     <!-- Duplicate Preview Panel -->
     <section id="duplicatePanel" class="panel hidden">
@@ -118,12 +118,14 @@
         <div id="patternChips" class="chips-wrap"></div>
 
         <div class="session-input-row">
-          <input type="text" id="newPatternInput" placeholder="Add domain or keyword (e.g. framer, figma.com)" />
+          <input type="text" id="newPatternInput" aria-label="Add domain or keyword"
+            placeholder="Add domain or keyword (e.g. framer, figma.com)" />
           <button id="btnAddPattern" class="btn btn-sm btn-primary">Add</button>
         </div>
 
         <div class="rules-footer">
-          <input type="text" id="newCategoryInput" placeholder="New category name..." maxlength="24" />
+          <input type="text" id="newCategoryInput" aria-label="New category name" placeholder="New category name..."
+            maxlength="24" />
           <button id="btnCreateCategory" class="btn btn-sm">+ Category</button>
           <button id="btnResetRules" class="btn btn-sm" title="Restore default categories">Reset</button>
         </div>
@@ -145,7 +147,8 @@
     <section class="section">
       <div class="section-title">Saved Sessions (Local)</div>
       <div class="session-input-row">
-        <input type="text" id="sessionNameInput" placeholder="Session name (optional)..." maxlength="50" />
+        <input type="text" id="sessionNameInput" aria-label="Session name" placeholder="Session name (optional)..."
+          maxlength="50" />
         <button id="btnSaveSession" class="btn btn-primary btn-sm">Save</button>
       </div>
       <ul id="sessionList" class="session-list"></ul>

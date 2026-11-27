@@ -39,7 +39,7 @@ async function flashBadge(text, color = "#18181b") {
     await chrome.action.setBadgeBackgroundColor({ color });
     await chrome.action.setBadgeText({ text });
     badgeTimer = setTimeout(() => {
-      chrome.action.setBadgeText({ text: "" });
+      chrome.action.setBadgeText({ text: "" }).catch(() => { });
     }, 3000);
   } catch {
     // Ignore badge errors
@@ -64,9 +64,6 @@ function getActiveSkipSet() {
   return skip;
 }
 
-/**
- * Safely runs auto-ungroup for a window, retrying every 200ms while Chrome is mid-drag.
- */
 async function triggerAutoUngroup(windowId, attempt = 0) {
   if (!(await getAutoUngroupSingle())) return;
 
@@ -91,15 +88,67 @@ async function triggerAutoUngroup(windowId, attempt = 0) {
     clearTimeout(ungroupRetryTimers.get(windowId));
     const timer = setTimeout(() => {
       ungroupRetryTimers.delete(windowId);
-      triggerAutoUngroup(windowId, attempt + 1);
+      triggerAutoUngroup(windowId, attempt + 1).catch((err) =>
+        console.error("Auto-ungroup retry failed:", err)
+      );
     }, 80);
     ungroupRetryTimers.set(windowId, timer);
   }
 }
 
-/**
- * Safely runs auto-group for a tab, retrying if Chrome is mid-drag.
- */
+async function processAutoGroupTab(tabId) {
+  const latestTab = await chrome.tabs.get(tabId);
+  if (
+    !latestTab ||
+    latestTab.pinned ||
+    latestTab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE
+  ) {
+    return;
+  }
+
+  const categories = await getCategories();
+  const rule = matchTabToRule(latestTab, categories);
+  if (!rule) return;
+
+  const existingGroups = await chrome.tabGroups.query({ windowId: latestTab.windowId });
+  const existingGroup = await findMatchingGroupInWindow(
+    latestTab.windowId,
+    rule,
+    existingGroups
+  );
+
+  if (existingGroup) {
+    await chrome.tabs.group({
+      groupId: existingGroup.id,
+      tabIds: [latestTab.id]
+    });
+    await setGroupRuleMapping(existingGroup.id, rule.key);
+    return;
+  }
+
+  const windowTabs = await chrome.tabs.query({
+    windowId: latestTab.windowId,
+    pinned: false
+  });
+  const matchingUngroupedIds = windowTabs
+    .filter((t) => t.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE)
+    .filter((t) => matchTabToRule(t, categories)?.key === rule.key)
+    .map((t) => t.id);
+
+  if (matchingUngroupedIds.length >= 2) {
+    const groupId = await chrome.tabs.group({
+      tabIds: matchingUngroupedIds,
+      createProperties: { windowId: latestTab.windowId }
+    });
+    justCreatedGroups.delete(groupId);
+    await chrome.tabGroups.update(groupId, {
+      title: rule.label,
+      color: rule.color
+    });
+    await setGroupRuleMapping(groupId, rule.key);
+  }
+}
+
 async function triggerAutoGroup(tabId, windowId, attempt = 0) {
   if (!(await isAutoGroupEnabled())) return;
 
@@ -107,61 +156,7 @@ async function triggerAutoGroup(tabId, windowId, attempt = 0) {
 
   await withWindowLock(windowId, async () => {
     try {
-      const latestTab = await chrome.tabs.get(tabId);
-      if (
-        !latestTab ||
-        latestTab.pinned ||
-        latestTab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE
-      ) {
-        return;
-      }
-
-      const categories = await getCategories();
-      const rule = matchTabToRule(latestTab, categories);
-      if (!rule) return;
-
-      const existingGroups = await chrome.tabGroups.query({ windowId: latestTab.windowId });
-      const existingGroup = await findMatchingGroupInWindow(
-        latestTab.windowId,
-        rule,
-        existingGroups
-      );
-
-      if (existingGroup) {
-        await chrome.tabs.group({
-          groupId: existingGroup.id,
-          tabIds: [latestTab.id]
-        });
-        await setGroupRuleMapping(existingGroup.id, rule.key);
-        return;
-      }
-
-      const windowTabs = await chrome.tabs.query({
-        windowId: latestTab.windowId,
-        pinned: false
-      });
-      const matchingUngroupedIds = windowTabs
-        .filter((t) => t.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE)
-        .filter((t) => {
-          const tRule = matchTabToRule(t, categories);
-          return tRule && tRule.key === rule.key;
-        })
-        .map((t) => t.id);
-
-      if (matchingUngroupedIds.length >= 2) {
-        const groupId = await chrome.tabs.group({
-          tabIds: matchingUngroupedIds,
-          createProperties: { windowId: latestTab.windowId }
-        });
-
-        justCreatedGroups.delete(groupId);
-
-        await chrome.tabGroups.update(groupId, {
-          title: rule.label,
-          color: rule.color
-        });
-        await setGroupRuleMapping(groupId, rule.key);
-      }
+      await processAutoGroupTab(tabId);
     } catch (err) {
       if (isDragLockError(err)) {
         shouldRetry = true;
@@ -173,13 +168,14 @@ async function triggerAutoGroup(tabId, windowId, attempt = 0) {
     clearTimeout(groupRetryTimers.get(tabId));
     const timer = setTimeout(() => {
       groupRetryTimers.delete(tabId);
-      triggerAutoGroup(tabId, windowId, attempt + 1);
+      triggerAutoGroup(tabId, windowId, attempt + 1).catch((err) =>
+        console.error("Auto-group retry failed:", err)
+      );
     }, 250);
     groupRetryTimers.set(tabId, timer);
   }
 }
 
-// Track newly created groups briefly so manual 1-tab group creation isn't immediately undone
 chrome.tabGroups.onCreated.addListener((group) => {
   justCreatedGroups.set(group.id, Date.now() + 4000);
 });
@@ -193,7 +189,6 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
   }
 });
 
-// Auto-group new/navigated tabs + check ungroup when a tab leaves a group
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!tab) return;
 
@@ -210,7 +205,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           justCreatedGroups.delete(changeInfo.groupId);
         }
       } catch {
-        // Ignore drag-lock errors here; ungroupSingleTabGroups also clears it when >= 2
+        // Ignore drag-lock errors; ungroupSingleTabGroups also clears >= 2
       }
     }
   }
@@ -221,23 +216,19 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   await triggerAutoGroup(tabId, tab.windowId);
 });
 
-// Fires when a tab is dragged out of a group / reordered within the same window
 chrome.tabs.onMoved.addListener(async (_tabId, moveInfo) => {
   await triggerAutoUngroup(moveInfo.windowId);
 });
 
-// Fires when a tab in a group is closed
 chrome.tabs.onRemoved.addListener(async (_tabId, removeInfo) => {
   if (removeInfo.isWindowClosing) return;
   await triggerAutoUngroup(removeInfo.windowId);
 });
 
-// Fires when a tab is dragged out to a different window (or torn off into a new window)
 chrome.tabs.onDetached.addListener(async (_tabId, detachInfo) => {
   await triggerAutoUngroup(detachInfo.oldWindowId);
 });
 
-// Global keyboard shortcuts
 chrome.commands.onCommand.addListener(async (command) => {
   try {
     const win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
