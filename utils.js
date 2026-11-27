@@ -1,5 +1,6 @@
 export const STORAGE_KEYS = {
   AUTO_GROUP: "autoGroup",
+  AUTO_UNGROUP_SINGLE: "autoUngroupSingle",
   ACTIVE_AT_END: "activeAtEnd",
   CATEGORIES: "categoryRules",
   GROUP_RULE_MAP: "groupRuleMap",
@@ -104,6 +105,39 @@ export async function saveCategories(categories) {
 export async function getActiveAtEnd() {
   const data = await chrome.storage.local.get(STORAGE_KEYS.ACTIVE_AT_END);
   return Boolean(data[STORAGE_KEYS.ACTIVE_AT_END]);
+}
+
+export async function getAutoUngroupSingle() {
+  const data = await chrome.storage.local.get(STORAGE_KEYS.AUTO_UNGROUP_SINGLE);
+  return Boolean(data[STORAGE_KEYS.AUTO_UNGROUP_SINGLE]);
+}
+
+export async function ungroupSingleTabGroups(windowId) {
+  const [tabs, groups] = await Promise.all([
+    chrome.tabs.query({ windowId }),
+    chrome.tabGroups.query({ windowId })
+  ]);
+  if (groups.length === 0) return 0;
+
+  const groupedTabs = new Map();
+  for (const tab of tabs) {
+    if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
+      if (!groupedTabs.has(tab.groupId)) groupedTabs.set(tab.groupId, []);
+      groupedTabs.get(tab.groupId).push(tab.id);
+    }
+  }
+
+  const singleTabIds = [];
+  for (const tabIds of groupedTabs.values()) {
+    if (tabIds.length === 1) {
+      singleTabIds.push(tabIds[0]);
+    }
+  }
+
+  if (singleTabIds.length > 0) {
+    await chrome.tabs.ungroup(singleTabIds);
+  }
+  return singleTabIds.length;
 }
 
 export async function getGroupRuleMap() {
@@ -439,6 +473,14 @@ export async function groupWindowTabs(windowId, { sortAfter = true } = {}) {
       groupedCount += tabIds.length;
       newGroups++;
     }
+  }
+
+  if (await getAutoUngroupSingle()) {
+    await ungroupSingleTabGroups(windowId);
+  }
+
+  if (sortAfter) {
+    await sortWindowTabs(windowId, "domain");
   }
 
   if (sortAfter) {

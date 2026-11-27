@@ -1,15 +1,17 @@
 import {
   STORAGE_KEYS,
   getCategories,
+  getAutoUngroupSingle,
   matchTabToRule,
   findMatchingGroupInWindow,
   setGroupRuleMapping,
   removeGroupRuleMapping,
+  ungroupSingleTabGroups,
   runCleanUp,
   mergeAllWindowsInto
 } from "./utils.js";
 
-// Per-window async queue so simultaneous tabs never race and create duplicate groups
+// Per-window async queue so simultaneous tabs never race
 const windowLocks = new Map();
 let badgeTimer = null;
 
@@ -38,12 +40,20 @@ async function isAutoGroupEnabled() {
   return Boolean(data[STORAGE_KEYS.AUTO_GROUP]);
 }
 
-// Auto-group newly loaded / navigated tabs when enabled
+// Auto-group new/navigated tabs + auto-ungroup if a tab leaves a group
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (!changeInfo.url && changeInfo.status !== "complete") return;
-  if (!tab || tab.pinned) return;
-  if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) return;
+  if (!tab) return;
 
+  // If a tab just left a group, check if that group now has only 1 tab left
+  if (changeInfo.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
+    if (await getAutoUngroupSingle()) {
+      await withWindowLock(tab.windowId, () => ungroupSingleTabGroups(tab.windowId));
+    }
+    return;
+  }
+
+  if (!changeInfo.url && changeInfo.status !== "complete") return;
+  if (tab.pinned || tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) return;
   if (!(await isAutoGroupEnabled())) return;
 
   await withWindowLock(tab.windowId, async () => {
@@ -51,7 +61,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     try {
       latestTab = await chrome.tabs.get(tabId);
     } catch {
-      return; // Tab closed
+      return;
     }
 
     if (
@@ -82,7 +92,6 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       return;
     }
 
-    // No existing group yet: check if at least 1 other ungrouped tab matches the same rule
     const windowTabs = await chrome.tabs.query({
       windowId: latestTab.windowId,
       pinned: false
@@ -107,6 +116,25 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       await setGroupRuleMapping(groupId, rule.key);
     }
   });
+});
+
+// Auto-ungroup 1-tab groups when a tab in that group is closed
+chrome.tabs.onRemoved.addListener(async (_tabId, removeInfo) => {
+  if (removeInfo.isWindowClosing) return;
+  if (!(await getAutoUngroupSingle())) return;
+
+  await withWindowLock(removeInfo.windowId, () =>
+    ungroupSingleTabGroups(removeInfo.windowId)
+  );
+});
+
+// Auto-ungroup 1-tab groups when a tab is dragged out to another window
+chrome.tabs.onDetached.addListener(async (_tabId, detachInfo) => {
+  if (!(await getAutoUngroupSingle())) return;
+
+  await withWindowLock(detachInfo.oldWindowId, () =>
+    ungroupSingleTabGroups(detachInfo.oldWindowId)
+  );
 });
 
 // Clean up remembered group IDs when a group is closed

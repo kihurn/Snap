@@ -8,6 +8,7 @@ import {
   groupWindowTabs,
   sortWindowTabs,
   findDuplicateTabs,
+  ungroupSingleTabGroups,
   runCleanUp,
   mergeAllWindowsInto
 } from "./utils.js";
@@ -16,6 +17,7 @@ const statsText = document.getElementById("statsText");
 const statusBar = document.getElementById("statusBar");
 const toggleAutoGroup = document.getElementById("toggleAutoGroup");
 const toggleActiveAtEnd = document.getElementById("toggleActiveAtEnd");
+const toggleAutoUngroupSingle = document.getElementById("toggleAutoUngroupSingle");
 
 // Duplicate preview elements
 const duplicatePanel = document.getElementById("duplicatePanel");
@@ -315,9 +317,11 @@ async function handleDeleteCategory() {
 async function loadToggles() {
   const data = await chrome.storage.local.get([
     STORAGE_KEYS.AUTO_GROUP,
+    STORAGE_KEYS.AUTO_UNGROUP_SINGLE,
     STORAGE_KEYS.ACTIVE_AT_END
   ]);
   toggleAutoGroup.checked = Boolean(data[STORAGE_KEYS.AUTO_GROUP]);
+  toggleAutoUngroupSingle.checked = Boolean(data[STORAGE_KEYS.AUTO_UNGROUP_SINGLE]);
   toggleActiveAtEnd.checked = Boolean(data[STORAGE_KEYS.ACTIVE_AT_END]);
 }
 
@@ -542,6 +546,23 @@ toggleActiveAtEnd.addEventListener("change", async () => {
       ? "Sort order: Active group/tab placed at end."
       : "Sort order: Pure alphabetical."
   );
+});
+
+toggleAutoUngroupSingle.addEventListener("change", async () => {
+  const enabled = toggleAutoUngroupSingle.checked;
+  await chrome.storage.local.set({ [STORAGE_KEYS.AUTO_UNGROUP_SINGLE]: enabled });
+
+  if (enabled) {
+    const win = await getCurrentWindow();
+    const ungrouped = await ungroupSingleTabGroups(win.id);
+    setStatus(
+      ungrouped > 0
+        ? `Auto-ungroup ON (ungrouped ${ungrouped} single-tab group${ungrouped === 1 ? "" : "s"}).`
+        : "Auto-ungroup 1-tab groups ON."
+    );
+  } else {
+    setStatus("Auto-ungroup 1-tab groups OFF.");
+  }
 });
 
 duplicateList.addEventListener("change", updateConfirmDupButton);
