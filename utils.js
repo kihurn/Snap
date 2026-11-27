@@ -112,7 +112,7 @@ export async function getAutoUngroupSingle() {
   return Boolean(data[STORAGE_KEYS.AUTO_UNGROUP_SINGLE]);
 }
 
-export async function ungroupSingleTabGroups(windowId) {
+export async function ungroupSingleTabGroups(windowId, skipGroupIds = null) {
   const [tabs, groups] = await Promise.all([
     chrome.tabs.query({ windowId }),
     chrome.tabGroups.query({ windowId })
@@ -128,8 +128,11 @@ export async function ungroupSingleTabGroups(windowId) {
   }
 
   const singleTabIds = [];
-  for (const tabIds of groupedTabs.values()) {
-    if (tabIds.length === 1) {
+  for (const [groupId, tabIds] of groupedTabs.entries()) {
+    if (tabIds.length >= 2 && skipGroupIds?.has(groupId)) {
+      skipGroupIds.delete(groupId);
+    }
+    if (tabIds.length === 1 && !skipGroupIds?.has(groupId)) {
       singleTabIds.push(tabIds[0]);
     }
   }
@@ -477,10 +480,6 @@ export async function groupWindowTabs(windowId, { sortAfter = true } = {}) {
 
   if (await getAutoUngroupSingle()) {
     await ungroupSingleTabGroups(windowId);
-  }
-
-  if (sortAfter) {
-    await sortWindowTabs(windowId, "domain");
   }
 
   if (sortAfter) {
